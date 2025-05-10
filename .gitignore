@@ -1,0 +1,31 @@
+# Bytecode dosyaları
+__pycache__/
+*.py[cod]
+
+# Sanal ortamlar
+venv/
+env/
+.myenv/
+
+# IDE dosyaları
+.vscode/
+.idea/
+
+# Sistem dosyaları
+.DS_Store
+Thumbs.db
+
+# Log dosyaları
+*.log
+
+# Geçici dosyalar
+*.swp
+*.tmp
+
+# Paketlenmiş dosyalar
+*.tar.gz
+*.egg-info/
+dist/
+build/
+
+ml_hand/
