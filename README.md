@@ -1,4 +1,4 @@
-cat > README.md << 'EOF'
+
 # ML Algorithms by Hand
 
 This repository is a collection of core machine learning algorithms implemented **from scratch in Python**. 
@@ -49,12 +49,13 @@ python Simple_Linear_Regression.py
 
 
 🧠 Current Algorithms
+```bash
 ✅ Simple Linear Regression
-
 (More algorithms will be added in the future.)
-
+```
 
 🤝 Contributing
+```bash
 Contributions are welcome! If you’d like to:
 
 Improve or refactor the code
@@ -64,10 +65,11 @@ Add new ML algorithms
 Fix bugs or enhance documentation
 
 Feel free to open a pull request or issue.
-
+```
 
 .
 
 📄 License
+```bash
 This project is licensed under the MIT License — see the LICENSE file for details.
-
+```
