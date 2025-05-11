@@ -67,7 +67,7 @@ Fix bugs or enhance documentation
 Feel free to open a pull request or issue.
 ```
 
-.
+
 
 📄 License
 ```bash
