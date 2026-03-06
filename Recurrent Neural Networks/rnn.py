@@ -123,7 +123,7 @@ for epoch in range(1001):
     xs, hs, ps = rnn.forward(inputs,h_prev)
  
     # step 2: BPTT
-    loss, dWxh, dWhh, dWhy, dbh, dby = rnn.backward(inputs, targets, hs, ps, xs)
+    loss, dWxh, dWhh, dWhy, dbh, dby = rnn.backward(inputs, targets, xs, hs, ps)
 
     # step 3 : update weights (gradient descent)
     rnn.Wxh -= learning_rate * dWxh
