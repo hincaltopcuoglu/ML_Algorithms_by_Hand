@@ -1,0 +1,5 @@
+rnn/
+__pycache__/
+.vscode/
+.continue/
+*.pyc
