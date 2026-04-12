@@ -2,6 +2,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jax import grad
 from jax import random
+from jax import jit
 
 def sigmoid(z):
     return 1.0 / (1.0 + jnp.exp(-z))
@@ -20,12 +21,12 @@ def binary_cross_entropy(y_pred, y_true):
 def predict_batch(X, w, b):
     return vmap(lambda x: predict_single(x, w, b))(X)
 
-
+@jit
 def loss_fn(w, b, X, y):
     y_pred = predict_batch(X, w, b)
     return binary_cross_entropy(y_pred, y)
 
-
+@jit
 def train_step(w, b, X, y, learning_rate):
     loss_value = loss_fn(w, b, X, y)
     grad_w, grad_b = grad(loss_fn, argnums=(0,1))(w, b, X, y)
