@@ -88,11 +88,11 @@ class ReverseRNN:
         x = np.zeros((self.Wxh.shape[1],1))
         x[start_char_ix] = 1
         h = h_prev
-        y = np.dot(self.Why, h) + self.by
         ixes = []
         
         for t in range(length):
             h = np.tanh(np.dot(self.Wxh, x) + np.dot(self.Whh, h)+ self.bh)
+            y = np.dot(self.Why, h) + self.by
             exp_y = np.exp(y - np.max(y))
             p = exp_y / np.sum(exp_y)
 
