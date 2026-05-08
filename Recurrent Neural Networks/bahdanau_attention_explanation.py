@@ -299,3 +299,398 @@ for step in range(5): # max 5 steps
 print("Produced word:", output)
 
 print("="*60)
+
+# step 8 -> training
+# aim : reverse training data 'abcd' to 'dcba'
+src_sentence = ['a', 'b', 'c', 'd', '<EOS>']
+tgt_sentence = ['d', 'c', 'b', 'a', '<EOS>']
+
+src_ix = [src_to_ix[c] for c in src_sentence]
+dec_in = [tgt_to_ix['<SOS>']] + [tgt_to_ix[c] for c in tgt_sentence[:-1]]
+dec_out = [tgt_to_ix[c] for c in tgt_sentence]
+
+print("dec_in :",dec_in)
+print("dec_in :",[ix_to_tgt[i] for i in dec_in])
+print("dec_out :",[ix_to_tgt[i] for i in dec_out])
+
+# Why we seperated dec_in and dec_out ? 
+# Decoder works t-1 time manner
+# In every step, model does :
+# I see: dec_in[i] -> previous word was it
+# I should produce -> dec_out[i] -> next word should be it
+# So it should produce 'd' when it sees '<SOS>' at step 0, and at step 1 it sees 'd' and should produce 'c' ....
+
+# Decoder step:   0        1        2        3        4
+#                 ↓        ↓        ↓        ↓        ↓
+# dec_in :      <SOS>      'd'      'c'      'b'      'a'      ← input (What I see ?)
+# dec_out:       'd'       'c'      'b'      'a'     <EOS>     ← target (What should I produce?)
+
+
+
+# loss calculation
+# run encoder first, (I re-write again)
+embeds = [E_src[i].reshape(-1,1) for i in src_ix]
+
+hf = []
+h = np.zeros((HIDDEN,1))
+for t in range(len(embeds)):
+    h = np.tanh(W_f @ embeds[t] + U_f @ h + b_f)
+    hf.append(h.copy())
+
+hb = [None] * len(embeds)
+h = np.zeros((HIDDEN,1))
+for t in reversed(range(len(embeds))):
+    h = np.tanh(W_b @ embeds[t] + U_b @ h + b_b)
+    hb[t] = h.copy()
+
+annotations = [np.concatenate([hf[t], hb[t]], axis = 0) for t in range(len(embeds))]
+
+# decoder + loss
+s = np.zeros((HIDDEN,1))
+loss = 0.0
+
+for i in range(len(dec_in)):
+    e_y = E_tgt[dec_in[i]].reshape(-1,1)
+
+    # attention
+    scores = []
+    for t in range(len(annotations)):
+        e_j = v_a.T @ np.tanh(W_a @ s + U_a @ annotations[t])
+        scores.append(e_j)
+
+    scores = np.array([sc.item() for sc in scores])
+    scores -= scores.max()
+    alphas = np.exp(scores) / np.exp(scores).sum()
+    c = sum(alphas[t] * annotations[t] for t in range(len(annotations)))
+
+    # decoder step
+    s = np.tanh(W_d @ e_y + U_d @ s + C_d @ c + b_d)
+
+    # output
+    logits = W_o @ s + b_o
+    logits -= logits.max()
+    probs = np.exp(logits) / np.exp(logits).sum()
+
+    loss += -np.log(probs[dec_out[i],0] + 1e-9)
+
+print(f"Loss: {loss:.4f}")
+
+print("="*60)
+
+# Backward: output layer
+# d_logits = probs - one_hot(target)
+d_logits = probs.copy() # (6,1)
+d_logits[dec_out[i],0] -= 1.0
+
+# W_o gradient
+dW_o = d_logits @ s.T # (6,1) @ (1,8) = (6,8)
+
+# s gradient
+d_s = W_o.T @ d_logits # (8,6) @ (6,1) = (8,1)
+
+print("="*60)
+print("Test for one step")
+# only for last step i=4 -> gradient test
+d_logits = probs.copy()
+d_logits[dec_out[4],0] -= 1.0
+
+dW_o = d_logits @ s.T
+d_s =  W_o.T @ d_logits
+
+print("dW_o shape:", dW_o.shape) # (6,8)
+print("d_s shape:", d_s.shape) # (8,1)
+
+print("="*60)
+
+# now loop with backward pass
+s = np.zeros((HIDDEN,1))
+loss = 0.0
+
+# lists to be saved
+all_s = [s.copy()] # all_s[0] = s0, all_s[1] = s1 ...
+all_probs = []
+all_c = []
+all_alphas = []
+all_ey = []
+
+for i in range(len(dec_in)):
+    e_y = E_tgt[dec_in[i]].reshape(-1,1)
+
+    # attention
+    scores = []
+    for t in range(len(annotations)):
+        e_j = v_a.T @ np.tanh(W_a @ s + U_a @ annotations[t])
+        scores.append(e_j)
+
+    scores = np.array([sc.item() for sc in scores])
+    scores -= scores.max()
+    alphas = np.exp(scores) / np.exp(scores).sum()
+    c = sum(alphas[t] * annotations[t] for t in range(len(annotations)))
+
+    # decoder step
+    s = np.tanh(W_d @ e_y + U_d @ s + C_d @ c + b_d)
+
+    # output 
+    logits = W_o @ s + b_o
+    logits -= logits.max()
+    probs = np.exp(logits) / np.exp(logits).sum()
+
+    loss += -np.log(probs[dec_out[i],0] + 1e-9)
+
+    # save
+    all_s.append(s.copy())
+    all_probs.append(probs.copy())
+    all_c.append(c.copy())
+    all_alphas.append(alphas.copy())
+    all_ey.append(e_y.copy())
+
+print(f"Loss: {loss:.4f}")
+print(f"all_s length: {len(all_s)}") # must be 6 (s0 + 5 steps)
+print(f"all_probs length: {len(all_probs)}") # must be 5
+
+print("="*60)
+
+# backward pass
+# gradient accumulators - same shape for every parameter
+dW_o = np.zeros_like(W_o)
+db_o = np.zeros_like(b_o)
+dW_d = np.zeros_like(W_d)
+dU_d = np.zeros_like(U_d)
+dC_d = np.zeros_like(C_d)
+db_d = np.zeros_like(b_d)
+dE_tgt = np.zeros_like(E_tgt)
+dW_a     = np.zeros_like(W_a)
+dU_a     = np.zeros_like(U_a)
+dv_a_grad = np.zeros_like(v_a)
+
+# the gradient comes from decoder recurrence (it will come from next step)
+d_s_next = np.zeros((HIDDEN,1))
+
+for i in reversed(range(len(dec_in))):
+    s_i = all_s[i + 1] # this step's hidden state
+    s_prev = all_s[i] # previous hidden state
+    probs = all_probs[i]
+    c = all_c[i]
+    e_y = all_ey[i]
+
+    # 1. Output layer Gradient
+    d_logits = probs.copy()
+    d_logits[dec_out[i],0] -= 1.0 #(6,1)
+
+    dW_o += d_logits @ s_i.T #(6,8)
+    db_o += d_logits #(6,1)
+
+    # the gradient comes to s_i: output + next step
+    d_s = W_o.T @ d_logits + d_s_next #(8,1)
+
+
+
+    # 2. Decoder RNN: s_i = tanh(...)
+    # derivation of tanh
+    d_pre = (1 -s_i **2) * d_s #(8,1)
+
+    dW_d += d_pre @ e_y.T #(8,4)
+    dU_d += d_pre @ s_prev.T #(8,8)
+    dC_d += d_pre @ c.T #(8,16)
+    db_d += d_pre #(8,1)
+    dE_tgt[dec_in[i]] += (W_d.T @ d_pre).squeeze()
+
+    # previous gradient comes to s
+    #d_s_next = U_d.T @ d_pre #(8,1)
+    d_c_i = C_d.T @ d_pre
+    alphas_i = all_alphas[i]
+    d_alpha = np.array([(annotations[t].T @ d_c_i).item() for t in range(len(annotations))])
+    dot = np.dot(alphas_i, d_alpha)
+    d_scores = alphas_i * (d_alpha - dot)
+
+    d_s_from_attn = np.zeros((HIDDEN, 1))
+
+    for j in range(len(annotations)):
+        tv = np.tanh(W_a @ s_prev + U_a @ annotations[j])
+        d_tanh = v_a * d_scores[j]
+        dv_a_grad += tv * d_scores[j]
+        d_pre_a = (1- tv**2) * d_tanh
+        dW_a += d_pre_a @ s_prev.T
+        dU_a += d_pre_a @ annotations[j].T
+        d_s_from_attn += W_a.T @ d_pre_a
+
+    # d_s_next is updated - from now it comes from both decoder and attention
+    d_s_next = U_d.T @ d_pre + d_s_from_attn
+
+print("dW_a shape:", dW_a.shape) #(8,8)
+print("dU_a shape:", dU_a.shape) # (8,16)
+
+print("="*60)
+
+# ── PARAMETER UPDATE (SGD) ──
+LR = 0.01
+W_o  -= LR * dW_o
+b_o  -= LR * db_o
+W_d  -= LR * dW_d
+U_d  -= LR * dU_d
+C_d  -= LR * dC_d
+b_d  -= LR * db_d
+W_a  -= LR * dW_a
+U_a  -= LR * dU_a
+v_a  -= LR * dv_a_grad
+E_tgt -= LR * dE_tgt
+
+
+
+print("="*60)
+# now loop everything to train !!
+
+LR = 0.1
+
+for epoch in range(500):
+    
+    # 1. Encoder
+    embeds = [E_src[i].reshape(-1,1) for i in src_ix]
+
+    hf = []
+    h = np.zeros((HIDDEN,1))
+    for t in range(len(embeds)):
+        h = np.tanh(W_f @ embeds[t] + U_f @ h + b_f)
+        hf.append(h.copy())
+
+    hb = [None] * len(embeds)
+    h = np.zeros((HIDDEN,1))
+    for t in reversed(range(len(embeds))):
+        h = np.tanh(W_b @ embeds[t] + U_b @ h + b_b)
+        hb[t] = h.copy()
+    
+    annotations = [np.concatenate([hf[t], hb[t]], axis = 0) for t in range(len(embeds))]
+
+    # 2. FORWARD + LOSS
+    s = np.zeros((HIDDEN,1))
+    loss = 0.0
+    all_s = [s.copy()]
+    all_probs = []
+    all_c = []
+    all_alphas = []
+    all_ey = []
+
+    for i in range(len(dec_in)):
+        e_y = E_tgt[dec_in[i]].reshape(-1,1)
+
+        scores = []
+        for t in range(len(annotations)):
+            e_j = v_a.T @ np.tanh(W_a @ s + U_a @ annotations[t])
+            scores.append(e_j)
+        scores = np.array([sc.item() for sc in scores])
+        scores -= scores.max()
+        alphas = np.exp(scores) / np.exp(scores).sum()
+        c = sum(alphas[t] * annotations[t] for t in range(len(annotations)))
+
+        s = np.tanh(W_d @ e_y + U_d @ s + C_d @ c + b_d)
+
+        logits = W_o @ s + b_o
+        logits -= logits.max()
+        probs = np.exp(logits) / np.exp(logits).sum()
+
+        loss += -np.log(probs[dec_out[i], 0] + 1e-9)
+        all_s.append(s.copy())
+        all_probs.append(probs.copy())
+        all_c.append(c.copy())
+        all_alphas.append(alphas.copy())
+        all_ey.append(e_y.copy())
+        
+
+    # 3. BACKWARD
+    dW_o = np.zeros_like(W_o)
+    db_o = np.zeros_like(b_o)
+    dW_d = np.zeros_like(W_d)
+    dU_d = np.zeros_like(U_d)
+    dC_d = np.zeros_like(C_d)
+    db_d = np.zeros_like(b_d)
+    dE_tgt = np.zeros_like(E_tgt)
+    dW_a = np.zeros_like(W_a)
+    dU_a = np.zeros_like(U_a)
+    dv_a_grad = np.zeros_like(v_a)
+    d_s_next = np.zeros((HIDDEN, 1))
+
+    for i in reversed(range(len(dec_in))):
+        s_i    = all_s[i + 1]
+        s_prev = all_s[i]
+        probs  = all_probs[i]
+        c      = all_c[i]
+        e_y    = all_ey[i]
+
+        d_logits = probs.copy()
+        d_logits[dec_out[i], 0] -= 1.0
+        dW_o += d_logits @ s_i.T
+        db_o += d_logits
+        d_s = W_o.T @ d_logits + d_s_next
+        d_pre = (1 - s_i**2) * d_s
+        dW_d += d_pre @ e_y.T
+        dU_d += d_pre @ s_prev.T
+        dC_d += d_pre @ c.T
+        db_d += d_pre
+        dE_tgt[dec_in[i]] += (W_d.T @ d_pre).squeeze()
+
+        d_c_i = C_d.T @ d_pre
+        alphas_i = all_alphas[i]
+        d_alpha = np.array([(annotations[t].T @ d_c_i).item() for t in range(len(annotations))])
+        dot = np.dot(alphas_i, d_alpha)
+        d_scores = alphas_i * (d_alpha - dot)
+        d_s_from_attn = np.zeros((HIDDEN, 1))
+        for j in range(len(annotations)):
+            tv = np.tanh(W_a @ s_prev + U_a @ annotations[j])
+            d_tanh = v_a * d_scores[j]
+            dv_a_grad += tv * d_scores[j]
+            d_pre_a = (1 - tv**2) * d_tanh
+            dW_a += d_pre_a @ s_prev.T
+            dU_a += d_pre_a @ annotations[j].T
+            d_s_from_attn += W_a.T @ d_pre_a
+        d_s_next = U_d.T @ d_pre + d_s_from_attn
+
+    # 4. UPDATE
+    W_o  -= LR * dW_o
+    b_o  -= LR * db_o
+    W_d  -= LR * dW_d
+    U_d  -= LR * dU_d
+    C_d  -= LR * dC_d
+    b_d  -= LR * db_d
+    W_a  -= LR * dW_a
+    U_a  -= LR * dU_a
+    v_a  -= LR * dv_a_grad
+    E_tgt -= LR * dE_tgt
+
+    if epoch % 50 == 0:
+        print(f"Epoch {epoch:4d} | Loss: {loss:.4f}")
+
+
+
+
+print("="*60)
+
+# Training sonrasi test
+print("\n--- Test ---")
+s = np.zeros((HIDDEN, 1))
+y_prev_ix = tgt_to_ix['<SOS>']
+output = []
+
+for step in range(6):
+    e_y = E_tgt[y_prev_ix].reshape(-1, 1)
+    scores = []
+    for t in range(len(annotations)):
+        e_j = v_a.T @ np.tanh(W_a @ s + U_a @ annotations[t])
+        scores.append(e_j)
+    scores = np.array([sc.item() for sc in scores])
+    scores -= scores.max()
+    alphas = np.exp(scores) / np.exp(scores).sum()
+    c = sum(alphas[t] * annotations[t] for t in range(len(annotations)))
+    s = np.tanh(W_d @ e_y + U_d @ s + C_d @ c + b_d)
+    logits = W_o @ s + b_o
+    logits -= logits.max()
+    probs = np.exp(logits) / np.exp(logits).sum()
+    y_ix = np.argmax(probs)
+    y_word = ix_to_tgt[y_ix]
+    output.append(y_word)
+    if y_word == '<EOS>':
+        break
+    y_prev_ix = y_ix
+
+print(f"Input:  {src_sentence}")
+print(f"Output: {output}")
+print(f"Expected: ['d', 'c', 'b', 'a', '<EOS>']")
