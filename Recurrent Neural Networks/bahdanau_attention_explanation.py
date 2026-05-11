@@ -540,138 +540,226 @@ E_tgt -= LR * dE_tgt
 print("="*60)
 # now loop everything to train !!
 
-LR = 0.1
+# Multiple reverse pairs so the model cannot memorize one fixed length pattern
+# without using the source; attention must learn which source position matters.
+# Long reverse pair repeated so its gradient is not drowned by short pairs.
+LONG = (['a', 'b', 'c', 'd', '<EOS>'], ['d', 'c', 'b', 'a', '<EOS>'])
+DATASET = (
+    [LONG] * 6
+    + [
+        (['a', 'b', '<EOS>'], ['b', 'a', '<EOS>']),
+        (['b', 'c', 'd', '<EOS>'], ['d', 'c', 'b', '<EOS>']),
+        (['c', 'd', '<EOS>'], ['d', 'c', '<EOS>']),
+        (['a', 'c', '<EOS>'], ['c', 'a', '<EOS>']),
+        (['b', 'd', '<EOS>'], ['d', 'b', '<EOS>']),
+        (['a', 'b', 'c', '<EOS>'], ['c', 'b', 'a', '<EOS>']),
+        (['a', 'd', '<EOS>'], ['d', 'a', '<EOS>']),
+    ]
+)
 
-for epoch in range(500):
-    
-    # 1. Encoder
-    embeds = [E_src[i].reshape(-1,1) for i in src_ix]
 
-    hf = []
-    h = np.zeros((HIDDEN,1))
-    for t in range(len(embeds)):
-        h = np.tanh(W_f @ embeds[t] + U_f @ h + b_f)
-        hf.append(h.copy())
+def encode_sentence(src_ix_local):
+    """BiRNN encoder for one source index list -> list of annotation vectors."""
+    embeds_local = [E_src[i].reshape(-1, 1) for i in src_ix_local]
+    hf_local = []
+    h = np.zeros((HIDDEN, 1))
+    for t in range(len(embeds_local)):
+        h = np.tanh(W_f @ embeds_local[t] + U_f @ h + b_f)
+        hf_local.append(h.copy())
+    hb_local = [None] * len(embeds_local)
+    h = np.zeros((HIDDEN, 1))
+    for t in reversed(range(len(embeds_local))):
+        h = np.tanh(W_b @ embeds_local[t] + U_b @ h + b_b)
+        hb_local[t] = h.copy()
+    ann = [np.concatenate([hf_local[t], hb_local[t]], axis=0) for t in range(len(embeds_local))]
+    return ann
 
-    hb = [None] * len(embeds)
-    h = np.zeros((HIDDEN,1))
-    for t in reversed(range(len(embeds))):
-        h = np.tanh(W_b @ embeds[t] + U_b @ h + b_b)
-        hb[t] = h.copy()
-    
-    annotations = [np.concatenate([hf[t], hb[t]], axis = 0) for t in range(len(embeds))]
 
-    # 2. FORWARD + LOSS
-    s = np.zeros((HIDDEN,1))
-    loss = 0.0
-    all_s = [s.copy()]
-    all_probs = []
-    all_c = []
-    all_alphas = []
-    all_ey = []
+# Per-example SGD + clipping (long pair oversampled in DATASET).
+LR = 0.08
+CLIP = 4.0
+N_EPOCHS = 2200
+N_PAIRS = len(DATASET)
 
-    for i in range(len(dec_in)):
-        e_y = E_tgt[dec_in[i]].reshape(-1,1)
+for epoch in range(N_EPOCHS):
+    order = np.random.permutation(N_PAIRS)
+    epoch_loss = 0.0
 
-        scores = []
-        for t in range(len(annotations)):
-            e_j = v_a.T @ np.tanh(W_a @ s + U_a @ annotations[t])
-            scores.append(e_j)
-        scores = np.array([sc.item() for sc in scores])
-        scores -= scores.max()
-        alphas = np.exp(scores) / np.exp(scores).sum()
-        c = sum(alphas[t] * annotations[t] for t in range(len(annotations)))
+    for k in order:
+        src_ch, tgt_ch = DATASET[int(k)]
+        src_ix_local = [src_to_ix[c] for c in src_ch]
+        dec_in_local = [tgt_to_ix['<SOS>']] + [tgt_to_ix[c] for c in tgt_ch[:-1]]
+        dec_out_local = [tgt_to_ix[c] for c in tgt_ch]
 
-        s = np.tanh(W_d @ e_y + U_d @ s + C_d @ c + b_d)
+        annotations = encode_sentence(src_ix_local)
 
-        logits = W_o @ s + b_o
-        logits -= logits.max()
-        probs = np.exp(logits) / np.exp(logits).sum()
+        # 2. FORWARD + LOSS
+        s = np.zeros((HIDDEN, 1))
+        loss = 0.0
+        all_s = [s.copy()]
+        all_probs = []
+        all_c = []
+        all_alphas = []
+        all_ey = []
 
-        loss += -np.log(probs[dec_out[i], 0] + 1e-9)
-        all_s.append(s.copy())
-        all_probs.append(probs.copy())
-        all_c.append(c.copy())
-        all_alphas.append(alphas.copy())
-        all_ey.append(e_y.copy())
-        
+        for i in range(len(dec_in_local)):
+            e_y = E_tgt[dec_in_local[i]].reshape(-1, 1)
 
-    # 3. BACKWARD
-    dW_o = np.zeros_like(W_o)
-    db_o = np.zeros_like(b_o)
-    dW_d = np.zeros_like(W_d)
-    dU_d = np.zeros_like(U_d)
-    dC_d = np.zeros_like(C_d)
-    db_d = np.zeros_like(b_d)
-    dE_tgt = np.zeros_like(E_tgt)
-    dW_a = np.zeros_like(W_a)
-    dU_a = np.zeros_like(U_a)
-    dv_a_grad = np.zeros_like(v_a)
-    d_s_next = np.zeros((HIDDEN, 1))
+            scores = []
+            for t in range(len(annotations)):
+                e_j = v_a.T @ np.tanh(W_a @ s + U_a @ annotations[t])
+                scores.append(e_j)
+            scores = np.array([sc.item() for sc in scores])
+            scores -= scores.max()
+            alphas = np.exp(scores) / np.exp(scores).sum()
+            c = sum(alphas[t] * annotations[t] for t in range(len(annotations)))
 
-    for i in reversed(range(len(dec_in))):
-        s_i    = all_s[i + 1]
-        s_prev = all_s[i]
-        probs  = all_probs[i]
-        c      = all_c[i]
-        e_y    = all_ey[i]
+            s = np.tanh(W_d @ e_y + U_d @ s + C_d @ c + b_d)
 
-        d_logits = probs.copy()
-        d_logits[dec_out[i], 0] -= 1.0
-        dW_o += d_logits @ s_i.T
-        db_o += d_logits
-        d_s = W_o.T @ d_logits + d_s_next
-        d_pre = (1 - s_i**2) * d_s
-        dW_d += d_pre @ e_y.T
-        dU_d += d_pre @ s_prev.T
-        dC_d += d_pre @ c.T
-        db_d += d_pre
-        dE_tgt[dec_in[i]] += (W_d.T @ d_pre).squeeze()
+            logits = W_o @ s + b_o
+            logits -= logits.max()
+            probs = np.exp(logits) / np.exp(logits).sum()
 
-        d_c_i = C_d.T @ d_pre
-        alphas_i = all_alphas[i]
-        d_alpha = np.array([(annotations[t].T @ d_c_i).item() for t in range(len(annotations))])
-        dot = np.dot(alphas_i, d_alpha)
-        d_scores = alphas_i * (d_alpha - dot)
-        d_s_from_attn = np.zeros((HIDDEN, 1))
-        for j in range(len(annotations)):
-            tv = np.tanh(W_a @ s_prev + U_a @ annotations[j])
-            d_tanh = v_a * d_scores[j]
-            dv_a_grad += tv * d_scores[j]
-            d_pre_a = (1 - tv**2) * d_tanh
-            dW_a += d_pre_a @ s_prev.T
-            dU_a += d_pre_a @ annotations[j].T
-            d_s_from_attn += W_a.T @ d_pre_a
-        d_s_next = U_d.T @ d_pre + d_s_from_attn
+            loss += -np.log(probs[dec_out_local[i], 0] + 1e-9)
+            all_s.append(s.copy())
+            all_probs.append(probs.copy())
+            all_c.append(c.copy())
+            all_alphas.append(alphas.copy())
+            all_ey.append(e_y.copy())
 
-    # 4. UPDATE
-    W_o  -= LR * dW_o
-    b_o  -= LR * db_o
-    W_d  -= LR * dW_d
-    U_d  -= LR * dU_d
-    C_d  -= LR * dC_d
-    b_d  -= LR * db_d
-    W_a  -= LR * dW_a
-    U_a  -= LR * dU_a
-    v_a  -= LR * dv_a_grad
-    E_tgt -= LR * dE_tgt
+        epoch_loss += loss
 
-    if epoch % 50 == 0:
-        print(f"Epoch {epoch:4d} | Loss: {loss:.4f}")
+        # 3. BACKWARD
+        dW_o = np.zeros_like(W_o)
+        db_o = np.zeros_like(b_o)
+        dW_d = np.zeros_like(W_d)
+        dU_d = np.zeros_like(U_d)
+        dC_d = np.zeros_like(C_d)
+        db_d = np.zeros_like(b_d)
+        dE_tgt = np.zeros_like(E_tgt)
+        dW_a = np.zeros_like(W_a)
+        dU_a = np.zeros_like(U_a)
+        dv_a_grad = np.zeros_like(v_a)
+        d_s_next = np.zeros((HIDDEN, 1))
+
+        for i in reversed(range(len(dec_in_local))):
+            s_i = all_s[i + 1]
+            s_prev = all_s[i]
+            probs = all_probs[i]
+            c = all_c[i]
+            e_y = all_ey[i]
+
+            d_logits = probs.copy()
+            d_logits[dec_out_local[i], 0] -= 1.0
+            dW_o += d_logits @ s_i.T
+            db_o += d_logits
+            d_s = W_o.T @ d_logits + d_s_next
+            d_pre = (1 - s_i**2) * d_s
+            dW_d += d_pre @ e_y.T
+            dU_d += d_pre @ s_prev.T
+            dC_d += d_pre @ c.T
+            db_d += d_pre
+            dE_tgt[dec_in_local[i]] += (W_d.T @ d_pre).squeeze()
+
+            d_c_i = C_d.T @ d_pre
+            alphas_i = all_alphas[i]
+            d_alpha = np.array([(annotations[t].T @ d_c_i).item() for t in range(len(annotations))])
+            dot = np.dot(alphas_i, d_alpha)
+            d_scores = alphas_i * (d_alpha - dot)
+            d_s_from_attn = np.zeros((HIDDEN, 1))
+            for j in range(len(annotations)):
+                tv = np.tanh(W_a @ s_prev + U_a @ annotations[j])
+                d_tanh = v_a * d_scores[j]
+                dv_a_grad += tv * d_scores[j]
+                d_pre_a = (1 - tv**2) * d_tanh
+                dW_a += d_pre_a @ s_prev.T
+                dU_a += d_pre_a @ annotations[j].T
+                d_s_from_attn += W_a.T @ d_pre_a
+            d_s_next = U_d.T @ d_pre + d_s_from_attn
+
+        # clip then update (one step per training pair)
+        for g in (dW_o, db_o, dW_d, dU_d, dC_d, db_d, dE_tgt, dW_a, dU_a, dv_a_grad):
+            np.clip(g, -CLIP, CLIP, out=g)
+
+        W_o -= LR * dW_o
+        b_o -= LR * db_o
+        W_d -= LR * dW_d
+        U_d -= LR * dU_d
+        C_d -= LR * dC_d
+        b_d -= LR * db_d
+        W_a -= LR * dW_a
+        U_a -= LR * dU_a
+        v_a -= LR * dv_a_grad
+        E_tgt -= LR * dE_tgt
+
+    if epoch % 200 == 0:
+        # metric 1: train loss
+        train_loss = epoch_loss
+
+        # metric 2: predicted sequence on a fixed demo input
+        demo_src_ix = [src_to_ix[c] for c in ['a', 'b', 'c', 'd', '<EOS>']]
+        demo_annotations = encode_sentence(demo_src_ix)
+        s_eval = np.zeros((HIDDEN, 1))
+        y_prev_eval = tgt_to_ix['<SOS>']
+        pred_seq = []
+        for _ in range(6):
+            e_y_eval = E_tgt[y_prev_eval].reshape(-1, 1)
+            scores_eval = []
+            for t in range(len(demo_annotations)):
+                e_j_eval = v_a.T @ np.tanh(W_a @ s_eval + U_a @ demo_annotations[t])
+                scores_eval.append(e_j_eval)
+            scores_eval = np.array([sc.item() for sc in scores_eval])
+            scores_eval -= scores_eval.max()
+            alphas_eval = np.exp(scores_eval) / np.exp(scores_eval).sum()
+            c_eval = sum(alphas_eval[t] * demo_annotations[t] for t in range(len(demo_annotations)))
+            s_eval = np.tanh(W_d @ e_y_eval + U_d @ s_eval + C_d @ c_eval + b_d)
+            logits_eval = W_o @ s_eval + b_o
+            logits_eval -= logits_eval.max()
+            probs_eval = np.exp(logits_eval) / np.exp(logits_eval).sum()
+            y_eval = int(np.argmax(probs_eval))
+            pred_word = ix_to_tgt[y_eval]
+            pred_seq.append(pred_word)
+            if pred_word == '<EOS>':
+                break
+            y_prev_eval = y_eval
+
+        print(f"Epoch {epoch:4d} | train loss: {train_loss:.4f} | predicted sequence: {pred_seq}")
 
 
 
 
 print("="*60)
 
-# Training sonrasi test
-print("\n--- Test ---")
+## What is alignment ?
+# After training, alphas are being calculated for each decoder step.
+# step 0 -> while 'd' is produced, which word that the source looked ?
+# step 1 -> while 'c' is produced, which word that the source looked ?
+# ...
+
+# if you get all "alphas" in to one matrix, the result is:
+#              a     b     c     d    <EOS>
+# out[0]='d'  0.02  0.01  0.03  0.91  0.03   ← looks 'd'
+# out[1]='c'  0.01  0.02  0.94  0.02  0.01   ← looks 'c'
+# out[2]='b'  0.02  0.93  0.02  0.02  0.01   ← looks 'b'
+# out[3]='a'  0.94  0.02  0.02  0.01  0.01   ← looks 'a'
+
+
+
+# Test after Training — re-encode the demo source so annotations match this sentence
+demo_src_chars = ['a', 'b', 'c', 'd', '<EOS>']
+demo_tgt_chars = ['d', 'c', 'b', 'a', '<EOS>']
+src_ix_demo = [src_to_ix[c] for c in demo_src_chars]
+annotations = encode_sentence(src_ix_demo)
+src_sentence = demo_src_chars  # column labels for alignment matrix
+
 s = np.zeros((HIDDEN, 1))
 y_prev_ix = tgt_to_ix['<SOS>']
 output = []
+alignment = [] # we will save every steps' alignments
 
 for step in range(6):
     e_y = E_tgt[y_prev_ix].reshape(-1, 1)
+
     scores = []
     for t in range(len(annotations)):
         e_j = v_a.T @ np.tanh(W_a @ s + U_a @ annotations[t])
@@ -680,17 +768,38 @@ for step in range(6):
     scores -= scores.max()
     alphas = np.exp(scores) / np.exp(scores).sum()
     c = sum(alphas[t] * annotations[t] for t in range(len(annotations)))
+
     s = np.tanh(W_d @ e_y + U_d @ s + C_d @ c + b_d)
     logits = W_o @ s + b_o
     logits -= logits.max()
     probs = np.exp(logits) / np.exp(logits).sum()
     y_ix = np.argmax(probs)
     y_word = ix_to_tgt[y_ix]
+
+    alignment.append(alphas.copy())
     output.append(y_word)
+
     if y_word == '<EOS>':
         break
     y_prev_ix = y_ix
 
-print(f"Input:  {src_sentence}")
+
+# alignment matrix yazdir (soft alpha = paper'daki Figure 3 benzeri)
+print("\nAlignment Matrix (soft weights alpha_ij):")
+print("        " + "  ".join(f"{c:>6}" for c in src_sentence))
+for i, (word, weights) in enumerate(zip(output, alignment)):
+    print(f"out[{i}]={word}  " + "  ".join(f"{w:>6.3f}" for w in weights))
+
+# Softmax dagilimi duz olsa bile argmax hangi kaynak pozisyonuna en cok baktigini gosterir
+print("\nArgmax source position per decoder step (0=a ... 4=<EOS>):")
+for i, weights in enumerate(alignment):
+    j = int(np.argmax(weights))
+    print(f"  step {i} ({output[i]:>5}) -> index {j} ({src_sentence[j]})")
+
+print("\nNote: Correct translation with nearly-uniform alphas can happen because the "
+      "decoder RNN can carry most of the 'what to say next' signal; sharper alphas "
+      "often appear when the task forces reordering or when the encoder is trained too.")
+
+print(f"\nInput:  {src_sentence}")
 print(f"Output: {output}")
-print(f"Expected: ['d', 'c', 'b', 'a', '<EOS>']")
+print(f"Expected: {demo_tgt_chars}")
