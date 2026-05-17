@@ -58,6 +58,15 @@ class GRU:
         self.W_h = np.random.randn(hidden_size, input_size) * 0.01
         self.U_h = np.random.randn(hidden_size, hidden_size) * 0.01
 
+        # Gradient accumulators (reset before each training step)
+        self.dW_r = np.zeros_like(self.W_r)
+        self.dU_r = np.zeros_like(self.U_r)
+        self.dW_z = np.zeros_like(self.W_z)
+        self.dU_z = np.zeros_like(self.U_z)
+        self.dW_h = np.zeros_like(self.W_h)
+        self.dU_h = np.zeros_like(self.U_h)
+
+
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
 
@@ -66,9 +75,40 @@ class GRU:
         r_t = self.sigmoid(self.W_r @ x_t + self.U_r @ h_prev)
         z_t = self.sigmoid(self.W_z @ x_t + self.U_z @ h_prev)
         h_hat_t = np.tanh(self.W_h @ x_t + self.U_h @ (r_t * h_prev))
-        h_t = (1 - z_t) * h_prev + z_t * h_hat_t 
+        h_t = (1 - z_t) * h_prev + z_t * h_hat_t
 
-        return h_t
+        cache = (x_t, h_prev, r_t, z_t, h_hat_t)
+
+        return h_t, cache
+
+    def backward(self, dh_t, cache):
+        x_t, h_prev, r_t, z_t, h_hat_t = cache
+
+        # step 1: Through the final interpoliation h_t = (1-z)*h_prev + z*h_hat
+        dh_hat = dh_t * z_t
+        dz = dh_t * (h_hat_t - h_prev)
+        dh_prev = dh_t * (1 - z_t)
+
+        # step 2: through tanh (candidate hidden state)
+        d_tanh = dh_hat  * (1 - h_hat_t ** 2)
+        self.dW_h += d_tanh @ x_t.T
+        self.dU_h += d_tanh @ (r_t * h_prev).T
+        dr = (self.U_h.T @ d_tanh) * h_prev
+        dh_prev += (self.U_h.T @ d_tanh) * r_t
+
+        # Step 3: Through sigmoid (update gate z)
+        d_sig_z = dz * z_t * (1 - z_t)
+        self.dW_z += d_sig_z @ x_t.T
+        self.dU_z += d_sig_z @ h_prev.T
+        dh_prev += self.U_z.T @ d_sig_z
+
+        # Step 4: Through sigmoid (reset gate r)
+        d_sig_r = dr * r_t * (1 - r_t)
+        self.dW_r += d_sig_r @ x_t.T
+        self.dU_r += d_sig_r @ h_prev.T
+        dh_prev += self.U_r.T @ d_sig_r
+
+        return dh_prev
 
 
 
@@ -81,11 +121,13 @@ class Encoder:
         # inputs = list of one-hot vectors, one per word
 
         h = np.zeros((self.hidden_size,1)) # start with empty memory
+        caches = []
 
         for x_t in inputs:
-            h = self.gru.forward(x_t, h)
+            h, cache = self.gru.forward(x_t, h)
+            caches.append(cache)
         
-        return h  # this is the context vector c
+        return h, caches  # this is the context vector c
 
     # what it does ?
     # Word 1: "growth"  → GRU → h₁
@@ -147,7 +189,7 @@ class Decoder:
         for _ in range(max_len):
 
             # Step 1: Run the GRU
-            h = self.gru.forward(x,h)
+            h, cache = self.gru.forward(x,h)
 
             # Step 2: Compute word scores
             scores = self.W_out @ h + self.b_out
@@ -174,25 +216,168 @@ class Decoder:
 # --- Putting it all together ---
 
 # 1. Create encoder and decoder
+# encoder = Encoder(src_vocab_size, hidden_size)
+# decoder = Decoder(hidden_size, tgt_vocab_size)
+
+# 2. Prepare input sentence as list of one-hot vector
+# sentence = ['the', 'economy', 'has', 'slowed']
+
+# inputs = []
+# for word in sentence:
+#     x = np.zeros((src_vocab_size,1))
+#     x[src_to_ix[word]] = 1
+#     inputs.append(x)
+
+# 3.Encode the sentence -> get context vector
+# context = encoder.forward(inputs)
+
+# 4. Decode the context vector -> get translation
+# output_ids = decoder.forward(context, tgt_vocab_size)
+
+# 5. Conver output indices back to words
+# output_words = [ix_to_tgt[ix] for ix in output_ids]
+# print("Input: ", sentence)
+# print("Output: ", output_words)
+
+
+#################### -------------------------- ##################
+
+
+
+# Training loop :
+# For each epoch:
+#     For each (english_sentence, french_sentence) pair:
+
+#         # ENCODER forward
+#         context = encoder.forward(src_inputs)
+
+#         # DECODER forward with teacher forcing
+#         loss = 0
+#         for each target word:
+#             h = gru(correct_previous_word, h)
+#             scores → softmax → probabilities
+#             loss += cross_entropy(probs, correct_next_word)
+
+#         # BACKWARD PASS
+#         backprop through decoder
+#         backprop through encoder
+
+#         # UPDATE WEIGHTS
+#         all_weights -= learning_rate * gradients
+
+
+# Training data: (english_sentence, french_sentence)
+train_data = [
+    (["the", "economy", "has", "slowed"],
+     ["<START>", "la", "economie", "a", "ralenti", "<END>"]),
+
+    (["growth", "has", "slowed"],
+     ["<START>", "croissance", "a", "ralenti", "<END>"]),
+]
+
+def words_to_onehots(words, word_to_ix, vocab_size):
+    result = []
+    for w in words:
+        x = np.zeros((vocab_size, 1))
+        x[word_to_ix[w]] = 1
+        result.append(x)
+    return result
+
+# Traning loop
+
 encoder = Encoder(src_vocab_size, hidden_size)
 decoder = Decoder(hidden_size, tgt_vocab_size)
 
-# 2. Prepare input sentence as list of one-hot vector
-sentence = ['the', 'economy', 'has', 'slowed']
+for epoch in range(500):
+    total_loss = 0
 
-inputs = []
-for word in sentence:
-    x = np.zeros((src_vocab_size,1))
-    x[src_to_ix[word]] = 1
-    inputs.append(x)
+    for src_words, tgt_words in train_data:
 
-# 3.Encode the sentence -> get context vector
-context = encoder.forward(inputs)
+        # Prepare inputs
+        src_inputs = words_to_onehots(src_words, src_to_ix, src_vocab_size)
+        # decoder input: <START> to second to last word
+        dec_inputs = words_to_onehots(tgt_words[:-1], tgt_to_ix, tgt_vocab_size)
+        # targets :second word to <END>
+        dec_targets = [tgt_to_ix[w] for w in tgt_words[1:]]
 
-# 4. Decode the context vector -> get translation
-output_ids = decoder.forward(context, tgt_vocab_size)
+        # -- Encoder forward --
+        context, enc_caches = encoder.forward(src_inputs)
 
-# 5. Conver output indices back to words
-output_words = [ix_to_tgt[ix] for ix in output_ids]
-print("Input: ", sentence)
-print("Output: ", output_words)
+        # -- Decoder forward with forcing --
+        h = context
+        dec_hs = [h]
+        dec_caches = []
+        prob_list = []
+
+        for x_t in dec_inputs:
+            h, cache = decoder.gru.forward(x_t, h)
+            dec_hs.append(h)
+            dec_caches.append(cache)
+            scores = decoder.W_out @ h + decoder.b_out
+            exp_s = np.exp(scores - np.max(scores))
+            probs = exp_s / np.sum(exp_s)
+            prob_list.append(probs)
+
+        
+        # compute loss 
+        loss = 0
+        for t, target_ix in enumerate(dec_targets):
+            loss += -np.log(prob_list[t][target_ix, 0] + 1e-9)
+        total_loss += loss
+
+        # -- decoder backward --
+        # reset decoder GRU gradients
+        decoder.gru.dW_r[:] = 0; decoder.gru.dU_r[:] = 0
+        decoder.gru.dW_z[:] = 0; decoder.gru.dU_z[:] = 0
+        decoder.gru.dW_h[:] = 0; decoder.gru.dU_h[:] = 0
+        dW_out = np.zeros_like(decoder.W_out)
+        db_out = np.zeros_like(decoder.b_out)
+        
+        dh = np.zeros((hidden_size, 1))
+
+        for t in reversed(range(len(dec_targets))):
+            dy = np.copy(prob_list[t])
+            dy[dec_targets[t]] -= 1
+            dW_out += dy @ dec_hs[t+1].T
+            db_out += dy
+            dh_from_loss = decoder.W_out.T @ dy
+            dh = dh + dh_from_loss
+            dh = decoder.gru.backward(dh, dec_caches[t])
+
+        
+        # --- ENCODER BACKWARD ---
+        encoder.gru.dW_r[:] = 0; encoder.gru.dU_r[:] = 0
+        encoder.gru.dW_z[:] = 0; encoder.gru.dU_z[:] = 0
+        encoder.gru.dW_h[:] = 0; encoder.gru.dU_h[:] = 0
+
+        dh = dh  # gradient flows from decoder into encoder's last hidden state
+        for cache in reversed(enc_caches):
+            dh = encoder.gru.backward(dh, cache)
+        # --- CLIP GRADIENTS ---
+        for grad in [encoder.gru.dW_r, encoder.gru.dU_r,
+                     encoder.gru.dW_z, encoder.gru.dU_z,
+                     encoder.gru.dW_h, encoder.gru.dU_h,
+                     decoder.gru.dW_r, decoder.gru.dU_r,
+                     decoder.gru.dW_z, decoder.gru.dU_z,
+                     decoder.gru.dW_h, decoder.gru.dU_h,
+                     dW_out, db_out]:
+            np.clip(grad, -5, 5, out=grad)
+        # --- UPDATE WEIGHTS ---
+        lr = learning_rate
+        encoder.gru.W_r -= lr * encoder.gru.dW_r
+        encoder.gru.U_r -= lr * encoder.gru.dU_r
+        encoder.gru.W_z -= lr * encoder.gru.dW_z
+        encoder.gru.U_z -= lr * encoder.gru.dU_z
+        encoder.gru.W_h -= lr * encoder.gru.dW_h
+        encoder.gru.U_h -= lr * encoder.gru.dU_h
+        decoder.gru.W_r -= lr * decoder.gru.dW_r
+        decoder.gru.U_r -= lr * decoder.gru.dU_r
+        decoder.gru.W_z -= lr * decoder.gru.dW_z
+        decoder.gru.U_z -= lr * decoder.gru.dU_z
+        decoder.gru.W_h -= lr * decoder.gru.dW_h
+        decoder.gru.U_h -= lr * decoder.gru.dU_h
+        decoder.W_out -= lr * dW_out
+        decoder.b_out -= lr * db_out
+    
+    if epoch % 50 == 0:
+        print(f"Epoch {epoch}, Loss: {total_loss:.4f}")
