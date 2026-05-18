@@ -344,7 +344,7 @@ predicted_words = [ix_to_tgt[i] for i in predicted_ix]
 
 print("Logits shape:", logits.shape)
 print("Probs shape:", probs.shape)
-print("Predicted tokens:", predicted_words)
+print("Predicted tokens:", predicted_words) # !!! there is no training at this step !!!!
 
 
 
@@ -364,11 +364,11 @@ print("Predicted tokens:", predicted_words)
 # TGT: "<SOS> Je suis etudiant"
 #      ↓
 # Embedding + Positional Encoding
-     ↓
+#      ↓
 # Masked Multi-Head Self-Attention
 #      ↓
 # Add & Norm
-     ↓
+#      ↓
 # Cross-Attention (Q←decoder, K,V←encoder)
 #      ↓
 # Add & Norm
@@ -378,3 +378,53 @@ print("Predicted tokens:", predicted_words)
 # Add & Norm
 #      ↓
 # Linear + Softmax  →  predicted tokens
+
+print("=== Traning Loop ===")
+
+# Training loop
+# first calculate cross-entropy
+# then calculate loss
+# In Decoder, the sentence is tgt_input = ["<SOS>", "Je", "suis", "etudiant"] 
+# Model should predict word in every position
+
+# Pozition 0 (<SOS>)      → "Je" should be predicted
+# Pozition 1 (Je)         → "suis" should be predicted
+# Pozition 2 (suis)       → "etudiant" should be predicted
+# Pozition 3 (etudiant)   → "<EOS>" should be predicted
+
+
+# === Cross-Entropy Loss ===
+tgt_output = ["Je", "suis", "etudiant", "<EOS>"]
+tgt_out_ix = [tgt_to_ix[w] for w in tgt_output]   # [0, 1, 2, 4]
+
+# === Training Loop (W_out only) ===
+LR = 0.1
+N_EPOCHS = 200
+
+for epoch in range(N_EPOCHS):
+    # forward (last layer)
+    logits = x_dec3_norm @ W_out + b_out
+    logits -= logits.max(axis=1, keepdims=True)
+    probs = np.exp(logits) / np.exp(logits).sum(axis=1, keepdims=True)
+
+    # loss
+    loss = 0.0
+    for t in range(len(tgt_out_ix)):
+        loss += -np.log(probs[t, tgt_out_ix[t]] + 1e-9)
+    loss /= len(tgt_out_ix)
+
+    # backward (W_out gradient)
+    dlogits = probs.copy()
+    for t in range(len(tgt_out_ix)):
+        dlogits[t, tgt_out_ix[t]] -= 1
+    dlogits /= len(tgt_out_ix)
+
+    dW_out = x_dec3_norm.T @ dlogits   # (8, 5)
+    db_out = dlogits.sum(axis=0)       # (5,)
+
+    W_out -= LR * dW_out
+    b_out -= LR * db_out
+
+    if epoch % 50 == 0:
+        pred = [ix_to_tgt[i] for i in np.argmax(probs, axis=1)]
+        print(f"Epoch {epoch:3d} | Loss: {loss:.4f} | Pred: {pred}")
