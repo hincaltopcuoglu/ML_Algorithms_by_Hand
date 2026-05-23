@@ -381,3 +381,22 @@ for epoch in range(500):
     
     if epoch % 50 == 0:
         print(f"Epoch {epoch}, Loss: {total_loss:.4f}")
+
+
+
+# --- Translation Test ---
+def translate(encoder, decoder, src_words, max_len=10):
+    src_inputs = words_to_onehots(src_words, src_to_ix, src_vocab_size)
+    context, _ = encoder.forward(src_inputs)
+    output_ids = decoder.forward(context, tgt_vocab_size, max_len)
+    return [ix_to_tgt[ix] for ix in output_ids]
+
+print("\n--- Translation Test After Training ---")
+test1 = ["the", "economy", "has", "slowed"]
+test2 = ["growth", "has", "slowed"]
+
+print(f"Input:    {test1}")
+print(f"Output:   {translate(encoder, decoder, test1)}")
+print()
+print(f"Input:    {test2}")
+print(f"Output:   {translate(encoder, decoder, test2)}")
