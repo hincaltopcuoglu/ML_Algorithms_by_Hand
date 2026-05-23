@@ -98,7 +98,7 @@ class Transformer:
         self.W_V_cross = [np.random.randn(d_model, d_k) * 0.01 for _ in range(n_heads)]
         self.W_O_cross = np.random.randn(n_heads * d_k, d_model) * 0.01
 
-        # Decoder FFN (2 MATRICES + 2 BIASES)S
+        # Decoder FFN (2 MATRICES + 2 BIASES)
         self.W1_dec = np.random.randn(d_model, d_ff) * 0.01
         self.b1_dec = np.zeros((d_ff,))
         self.W2_dec = np.random.randn(d_ff, d_model) * 0.01
